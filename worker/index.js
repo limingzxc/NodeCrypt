@@ -75,7 +75,10 @@ export default {
 
     // 处理登出（任何路径访问 /logout 都会清除 Cookie）
     if (url.pathname === "/logout") {
-      const response = Response.redirect(url.origin);
+      const response = new Response(null, {
+        status: 302,
+        headers: { Location: url.origin }
+      });
       response.headers.set("Set-Cookie", "auth=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
       return response;
     }
@@ -86,8 +89,7 @@ export default {
     if (authMatch) {
       const [message, signature] = authMatch[1].split(".");
       if (message && signature && await verifySignature(message, signature, password)) {
-        // === 认证通过：执行你原有的全部逻辑（包括 WebSocket、API、ASSETS）===
-        //（从这里开始，直接粘贴你原来的 fetch 内容，去掉原来的 Basic Auth 检查）
+        // === 认证通过：执行原有的全部逻辑（包括 WebSocket、API、ASSETS）===
 
         const upgradeHeader = request.headers.get('Upgrade');
         if (upgradeHeader && upgradeHeader === 'websocket') {
@@ -118,15 +120,21 @@ export default {
         const signature = await signMessage(message, password);
         const cookieValue = `${message}.${signature}`;
 
-        const response = Response.redirect(url.origin);
+        const response = new Response(null, {
+          status: 302,
+          headers: { Location: url.origin }
+        });
         response.headers.set(
           "Set-Cookie",
-          `auth=${cookieValue}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`  // 1年，可自行调短
+          `auth=${cookieValue}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`
         );
         return response;
       } else {
         // 密码错误
-        return Response.redirect(url.origin + "?error=1");
+        return new Response(null, {
+          status: 302,
+          headers: { Location: url.origin + "?error=1" }
+        });
       }
     }
 
