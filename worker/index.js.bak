@@ -68,7 +68,7 @@ const loginHtml = `
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const password = env.PASSWORD;   // 使用明文密码 
+    const password = env.PASSWORD;  /   // 使用明文密码 
     if (!password) {
       return new Response("Worker 配置错误：未设置 PASSWORD Secret", { status: 500 });
     }
