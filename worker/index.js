@@ -1,60 +1,147 @@
 import { generateClientId, encryptMessage, decryptMessage, logEvent, isString, isObject, getTime } from './utils.js';
 
-async function sha256Hex(str) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(str);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
+const encoder = new TextEncoder();
+
+// 安全比较字符串（防 timing attack）
+async function timingSafeEqual(a, b) {
+  const aBytes = encoder.encode(a);
+  const bBytes = encoder.encode(b);
+  if (aBytes.byteLength !== bBytes.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(aBytes, bBytes);
 }
 
-async function checkAuth(request, env) {
-  const storedHash = env.AUTH_PASSWORD_HASH;   // 密码的sha256 hex值
-
-  const auth = request.headers.get("Authorization");
-  if (!auth || !auth.startsWith("Basic ")) {
-    return new Response("Authentication required", {
-      status: 401,
-      headers: { "WWW-Authenticate": 'Basic realm="Protected"' }
-    });
-  }
-
-  const decoded = atob(auth.slice(6)); // 去掉 "Basic "
-  const password = decoded.split(":")[1] || ""; // 用户输入的密码
-  const passwordHash = await sha256Hex(password);
-
-  if (passwordHash !== storedHash) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  return null; // 通过验证
+// 生成 HMAC-SHA256 签名（用明文密码作为密钥）
+async function signMessage(message, password) {
+  const keyData = encoder.encode(password);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
+
+// 验证签名
+async function verifySignature(message, signature, password) {
+  const expectedSignature = await signMessage(message, password);
+  return await timingSafeEqual(expectedSignature, signature);
+}
+
+// 自定义登录页面 HTML（只有一个密码输入框，可自行美化）
+const loginHtml = `
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>密码验证</title>
+  <style>
+    body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f0f0; }
+    .box { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); text-align: center; width: 300px; }
+    input[type="password"] { width: 100%; padding: 12px; margin: 20px 0; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; box-sizing: border-box; }
+    button { padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+    button:hover { background: #0056b3; }
+    .error { color: red; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>请输入密码访问</h2>
+    <form method="POST" action="/login">
+      <input type="password" name="password" required autofocus placeholder="密码">
+      <button type="submit">提交</button>
+    </form>
+    <div class="error" id="error"></div>
+  </div>
+  <script>
+    if (location.search.includes('error=1')) {
+      document.getElementById('error').textContent = '密码错误，请重试';
+    }
+  </script>
+</body>
+</html>
+`;
 
 export default {
   async fetch(request, env, ctx) {
-
-     // === 插入密码保护：所有路径都必须验证 ===
-    const authFail = await checkAuth(request, env);
-    if (authFail) return authFail;
-    // ==========================================
-    
     const url = new URL(request.url);
-
-    // 处理WebSocket请求
-    const upgradeHeader = request.headers.get('Upgrade');
-    if (upgradeHeader && upgradeHeader === 'websocket') {
-      const id = env.CHAT_ROOM.idFromName('chat-room');
-      const stub = env.CHAT_ROOM.get(id);
-      return stub.fetch(request);
+    const password = env.PASSWORD;  /   // 使用明文密码 
+    if (!password) {
+      return new Response("Worker 配置错误：未设置 PASSWORD Secret", { status: 500 });
     }
 
-    // 处理API请求
-    if (url.pathname.startsWith('/api/')) {
-      // ...API 逻辑...
-      return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+    // 处理登出（任何路径访问 /logout 都会清除 Cookie）
+    if (url.pathname === "/logout") {
+      const response = Response.redirect(url.origin);
+      response.headers.set("Set-Cookie", "auth=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
+      return response;
     }
 
-    // 其余全部交给 ASSETS 处理（自动支持 hash 文件名和 SPA fallback）
-    return env.ASSETS.fetch(request);
+    // 检查 Cookie 是否有效
+    const cookie = request.headers.get("Cookie") || "";
+    const authMatch = cookie.match(/auth=([^;]+)/);
+    if (authMatch) {
+      const [message, signature] = authMatch[1].split(".");
+      if (message && signature && await verifySignature(message, signature, password)) {
+        // === 认证通过：执行你原有的全部逻辑（包括 WebSocket、API、ASSETS）===
+        //（从这里开始，直接粘贴你原来的 fetch 内容，去掉原来的 Basic Auth 检查）
+
+        const upgradeHeader = request.headers.get('Upgrade');
+        if (upgradeHeader && upgradeHeader === 'websocket') {
+          const id = env.CHAT_ROOM.idFromName('chat-room');
+          const stub = env.CHAT_ROOM.get(id);
+          return stub.fetch(request);
+        }
+
+        // 处理API请求
+        if (url.pathname.startsWith('/api/')) {
+          // ...你的 API 逻辑...
+          return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+        }
+
+        // 其余全部交给 ASSETS 处理
+        return env.ASSETS.fetch(request);
+      }
+    }
+
+    // 处理登录提交 (POST /login) —— 无论是否 WebSocket 都允许提交
+    if (url.pathname === "/login" && request.method === "POST") {
+      const formData = await request.formData();
+      const submittedPass = formData.get("password") || "";
+
+      if (await timingSafeEqual(submittedPass, password)) {
+        // 登录成功：设置签名 Cookie
+        const message = "authenticated";
+        const signature = await signMessage(message, password);
+        const cookieValue = `${message}.${signature}`;
+
+        const response = Response.redirect(url.origin);
+        response.headers.set(
+          "Set-Cookie",
+          `auth=${cookieValue}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`  // 1年，可自行调短
+        );
+        return response;
+      } else {
+        // 密码错误
+        return Response.redirect(url.origin + "?error=1");
+      }
+    }
+
+    // 未认证：区分 WebSocket 和普通 HTTP
+    const isWebSocket = request.headers.get('Upgrade') === 'websocket';
+
+    if (isWebSocket) {
+      // WebSocket 未认证直接返回 401（客户端会连接失败，可在前端提示用户先登录）
+      return new Response("WebSocket 需要先认证", { status: 401 });
+    } else {
+      // 普通 HTTP 返回自定义登录页面
+      return new Response(loginHtml, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
   }
 };
 

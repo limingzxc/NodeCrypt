@@ -12,7 +12,6 @@
 
 - 在cloudflare环境变量设置一下:
 - Type : Text
-- Variable name : AUTH_PASSWORD_HASH
-- Value : 你密码的sha256 hex值
+- Variable name : PASSWORD
+- Value : 你的密码
 
-访问网站时用户名不输入或者随便输入都行，只要密码输入对就ok
