@@ -10,7 +10,7 @@
 - 构建命令：npm run build
 - 部署命令：npm run deploy
 
-- 在cloudflare环境变量设置一下:
+- 创建cloudflare workers时环境变量设置一下:
 - Type : Text
 - Variable name : PASSWORD
 - Value : 你的密码
